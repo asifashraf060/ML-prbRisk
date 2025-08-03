@@ -1,6 +1,6 @@
 # Microplastic Risk Assessment Pipeline
 
-A concise framework for probabilistic microplastic risk assessment across groundwater, surface water, and sediment environments using ensemble machine learning with Bayesian uncertainty quantification. :contentReference[oaicite:1]{index=1}
+A concise framework for probabilistic microplastic risk assessment across groundwater, surface water, and sediment environments using ensemble machine learning with Bayesian uncertainty quantification.
 
 ## Features
 - **Data Loading & Preprocessing**: Reads Excel datasets, handles missing values, engineers hazard & diversity features.
