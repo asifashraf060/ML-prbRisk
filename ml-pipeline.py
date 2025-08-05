@@ -1,59 +1,66 @@
-"""
-Microplastic Risk Assessment using Ensemble Machine Learning with Bayesian Uncertainty Quantification
+'''
+Microplastic risk assessment using Ensemble Machine Learning with Bayesian Uncertainty Quantification
 Author: Asif Ashraf
-Date: 2025-08-02
+Date: 2025 - 08 - 02
 
-This script implements probabilistic risk assessment for microplastics across groundwater, 
-surface water, and sediment environments using ensemble ML methods with Bayesian uncertainty.
-"""
+Script implements probablistic risk assessment for MPs across different environment
+right now, supports -- groundwater(gw) || surface water(sw) || sediment environments (sed)
+'''
+
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+
 from scipy import stats
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier      # for ensemble ML
 from sklearn.svm import SVR, SVC
-from sklearn.gaussian_process import GaussianProcessRegressor, GaussianProcessClassifier
+
+from sklearn.gaussian_process import GaussianProcessRegressor, GaussianProcessClassifier    # for Bayesian
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel
 from sklearn.model_selection import LeaveOneOut, cross_val_score, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import r2_score, accuracy_score, classification_report
 from sklearn.impute import KNNImputer
+
 import warnings
 warnings.filterwarnings('ignore')
 
-# Set random seed for reproducibility
-np.random.seed(42)
+# set random set for repreducibility
+np.random.seed(42)  ### well, if 42 is always the answer to the universe; its not random, is it?
 
 class MicroplasticRiskAssessment:
-    """
-    Comprehensive framework for probabilistic microplastic risk assessment
-    using ensemble machine learning with Bayesian uncertainty quantification
-    """
-    
+    '''
+    framework for probablitstic mp risk assessment
+    ensemble ML <--> Bayesian uncertainty quantification
+    '''
+
     def __init__(self):
+        # containers; lel's see if I need them --
         self.data = {}
         self.models = {}
+
+        # thresholds to provide recommendation based on analsysis
         self.risk_thresholds = {
-            'groundwater': 1.0,  # MPs/L - conservative threshold
-            'surface_water': 10.0,  # MPs/L - based on ecological studies
-            'sediment': 150.0  # MPs/kg - sediment quality guideline
+            'groundwater' : 1.0,     # MPs/L - conservative threshold
+            'surface_water' : 10.0,    # MPs/L - based on ecological studies
+            'sediment': 150.0    # MPs/kg - sediemnt quality guideline
         }
         self.polymer_hazard_scores = {
-            'PE': 2.0,  # Polyethylene - moderate hazard
-            'PP': 2.0,  # Polypropylene - moderate hazard
-            'PU': 3.5,  # Polyurethane - higher hazard
-            'PA': 3.0,  # Polyamide - moderate-high hazard
-            'PS': 4.0   # Polystyrene - highest hazard
+            'PE': 2.0,     
+            'PP': 2.0,
+            'PU': 3.5,
+            'PA': 3.0,
+            'PS': 4.0
         }
         self.morphology_risk_factors = {
-            'Fiber': 1.5,  # Higher bioavailability
-            'Film': 1.2,   # Moderate risk
-            'Fragment': 1.0,  # Baseline risk
-            'Foam': 1.3   # Increased surface area
+            'Fiber' : 1.5,
+            'Film' : 1.2,
+            'Fragment': 1.0,
+            'Foam': 1.3
         }
-        
+
     def load_data(self, gw_file, sw_file, sed_file):
         """Load data from Excel files"""
         print("Loading microplastic data...")
@@ -72,7 +79,7 @@ class MicroplasticRiskAssessment:
         
         print("Data loaded successfully!")
         self._print_data_summary()
-        
+
     def _print_data_summary(self):
         """Print summary statistics for loaded data"""
         for env, df in self.data.items():
@@ -80,7 +87,8 @@ class MicroplasticRiskAssessment:
             print(f"  Samples: {len(df)}")
             print(f"  Mean abundance: {df['Abundance'].mean():.2f}")
             print(f"  Std abundance: {df['Abundance'].std():.2f}")
-            
+
+    
     def preprocess_data(self):
         """Preprocess data and engineer features"""
         print("\nPreprocessing data and engineering features...")
@@ -131,7 +139,7 @@ class MicroplasticRiskAssessment:
             self.data[env] = df
             
         print("Preprocessing completed!")
-        
+
     def calculate_risk_indices(self):
         """Calculate various risk indices"""
         print("\nCalculating environmental risk indices...")
@@ -178,12 +186,66 @@ class MicroplasticRiskAssessment:
                 0.2 * df['Morphology_Risk_Score'].mean() +
                 0.2 * env_results['PLI']
             )
+
+            # 5. Environment-Specific polymer risk indices
+            # calculate for each sample, then aggregate
+            polymer_cols = ['PE (%)', 'PP (%)', 'PU (%)', 'PA (%)', 'PS (%)']
+
+            # calculate polymer hazard sum for each sample
+            polymer_hazard_sums = []
+            for idx, row in df.iterrows():
+                hazard_sum = sum(
+                    row[col] * self.polymer_hazard_scores[col.split(' ')[0]]
+                    for col in polymer_cols
+                )
+                polymer_hazard_sums.append(hazard_sum)
+
+            df['Polymer_Hazard_Sum'] = polymer_hazard_sums
+
+            # calculate environment-specifc index
+            n_dividend = 10000
+            if env == 'sediment':
+                # SPRI - Sediment Polymer Risk Index
+                df['SPRI'] = df['Abundance'] * (df['Polymer_Hazard_Sum'] / n_dividend)
+                # collecting key stat in container
+                env_results['SPRI_mean'] = df['SPRI'].mean()
+                env_results['SPRI_std']  = df['SPRI'].std()
+                env_results['SPRI_max']  = df['SPRI'].max()
+
+            elif env == 'surface_water':
+                # SWRI - Surface Water Risk Index
+                df['SWRI'] = df['Abundance'] * (df['Polymer_Hazard_Sum'] / n_dividend)
+                # collecting key stat in container
+                env_results['SWRI_mean'] = df['SWRI'].mean()
+                env_results['SWRI_std']  = df['SWRI'].std()
+                env_results['SWRI_max']  = df['SWRI'].max()
+
+            elif env == 'groundwater':
+                # GWRI - Groundwater Risk Index
+                df['GWRI'] = df['Abundance'] * (df['Polymer_Hazard_Sum'] / n_dividend)
+                # collecting key stat in container
+                env_results['GWRI_mean'] = df['GWRI'].mean()
+                env_results['GWRI_std']  = df['GWRI'].std()
+                env_results['GWRI_max']  = df['GWRI'].max()
+
+            # 6. Monte Carlo simulation for new indices with uncertainty
+            index_name = 'SPRI' if env == 'sediment' else 'SWRI' if env == 'surface_water' else 'GWRI'
+            mc_index_values = []
+            for _ in range(10000):
+                # Sample abundance with uncertainty
+                sampled_abundance = np.random.normal(df['Abundance'].mean(), df['Abundance'].std())
+                # Sample polymer percentages with uncertainty (assuming 10% relative error)
+                sampled_polymer_sum  = np.random.normal(df['Polymer_Hazard_Sum'].mean(), df['Polymer_Hazard_Sum'].std() * 0.1)
+                mc_index_values.append(sampled_abundance * (sampled_polymer_sum / 10000))
+
+            env_results[f'{index_name}_MC_mean'] = np.mean(mc_index_values)
+            env_results[f'{index_name}_MC_95CI'] = np.percentile(mc_index_values, [2.5, 97.5])
             
             results[env] = env_results
             
         self.risk_indices = results
         self._print_risk_indices()
-        
+
     def _print_risk_indices(self):
         """Print calculated risk indices"""
         print("\n" + "="*60)
@@ -198,6 +260,29 @@ class MicroplasticRiskAssessment:
                   f"(95% CI: {indices['HQ_95CI'][0]:.3f}-{indices['HQ_95CI'][1]:.3f})")
             print(f"  Integrated Risk Score: {indices['Integrated_Risk_Score']:.3f}")
             
+            # Print environment-specific indices
+            if env == 'sediment':
+                print(f"\n  Sediment Polymer Risk Index (SPRI):")
+                print(f"    Mean: {indices['SPRI_mean']:.3f}")
+                print(f"    Std Dev: {indices['SPRI_std']:.3f}")
+                print(f"    Maximum: {indices['SPRI_max']:.3f}")
+                print(f"    Monte Carlo 95% CI: [{indices['SPRI_MC_95CI'][0]:.3f}, "
+                      f"{indices['SPRI_MC_95CI'][1]:.3f}]")
+            elif env == 'surface_water':
+                print(f"\n  Surface Water Risk Index (SWRI):")
+                print(f"    Mean: {indices['SWRI_mean']:.3f}")
+                print(f"    Std Dev: {indices['SWRI_std']:.3f}")
+                print(f"    Maximum: {indices['SWRI_max']:.3f}")
+                print(f"    Monte Carlo 95% CI: [{indices['SWRI_MC_95CI'][0]:.3f}, "
+                      f"{indices['SWRI_MC_95CI'][1]:.3f}]")
+            elif env == 'groundwater':
+                print(f"\n  Groundwater Risk Index (GWRI):")
+                print(f"    Mean: {indices['GWRI_mean']:.3f}")
+                print(f"    Std Dev: {indices['GWRI_std']:.3f}")
+                print(f"    Maximum: {indices['GWRI_max']:.3f}")
+                print(f"    Monte Carlo 95% CI: [{indices['GWRI_MC_95CI'][0]:.3f}, "
+                      f"{indices['GWRI_MC_95CI'][1]:.3f}]")
+                
     def build_ensemble_models(self):
         """Build ensemble models with Bayesian uncertainty"""
         print("\nBuilding ensemble models with Bayesian uncertainty quantification...")
@@ -368,7 +453,7 @@ class MicroplasticRiskAssessment:
                 print(f"  Using rule-based classifier as fallback")
             
             self.models[env] = env_models
-            
+
     def predict_with_uncertainty(self, env, new_data=None):
         """Make predictions with uncertainty quantification"""
         if new_data is None:
@@ -503,7 +588,7 @@ class MicroplasticRiskAssessment:
             'confidence_interval': (ci_lower, ci_upper),
             'uncertainty_std': uncertainty_std
         }
-        
+    
     def cross_environment_analysis(self):
         """Analyze relationships between environments"""
         print("\n" + "="*60)
@@ -570,7 +655,29 @@ class MicroplasticRiskAssessment:
         print(f"  Groundwater-Surface Water similarity: {gw_sw_similarity:.3f}")
         print(f"  Surface Water-Sediment similarity: {sw_sed_similarity:.3f}")
         print(f"  Groundwater-Sediment similarity: {gw_sed_similarity:.3f}")
-        
+
+        # 5. NEW: Comparative Analysis of Environment-Specific Indices
+        print("\n" + "="*60)
+        print("ENVIRONMENT-SPECIFIC RISK INDEX COMPARISON")
+        print("="*60)
+
+        # Compare the three indices
+        gwri_mean = self.risk_indices['groundwater']['GWRI_mean']
+        swri_mean = self.risk_indices['surface_water']['SWRI_mean']
+        spri_mean = self.risk_indices['sediment']['SPRI_mean']
+
+        print("\nRisk Index Values:")
+        print(f"  GWRI (Groundwater): {gwri_mean:.3f}")
+        print(f"  SWRI (Surface Water): {swri_mean:.3f}")
+        print(f"  SPRI (Sediment): {spri_mean:.3f}")
+
+        # Normalize to compare relative risk
+        total_risk = gwri_mean + swri_mean + spri_mean
+        print("\nRelative Risk Distribution:")
+        print(f"  Groundwater: {(gwri_mean/total_risk)*100:.1f}%")
+        print(f"  Surface Water: {(swri_mean/total_risk)*100:.1f}%")
+        print(f"  Sediment: {(spri_mean/total_risk)*100:.1f}%")
+
     def generate_risk_report(self):
         """Generate comprehensive risk assessment report"""
         print("\n" + "="*60)
@@ -596,8 +703,13 @@ class MicroplasticRiskAssessment:
         for env in self.data:
             hq_ci = self.risk_indices[env]['HQ_95CI']
             print(f"   {env.upper()} Hazard Quotient 95% CI: [{hq_ci[0]:.3f}, {hq_ci[1]:.3f}]")
-            
-        print("\n4. MANAGEMENT RECOMMENDATIONS:")
+        
+        print("\n4. ENVIRONMENT-SPECIFIC RISK INDICES:")
+        print(f"   GWRI (Groundwater): {self.risk_indices['groundwater']['GWRI_mean']:.3f}")
+        print(f"   SWRI (Surface Water): {self.risk_indices['surface_water']['SWRI_mean']:.3f}")
+        print(f"   SPRI (Sediment): {self.risk_indices['sediment']['SPRI_mean']:.3f}")
+
+        print("\n5. MANAGEMENT RECOMMENDATIONS:")
         
         # Environment-specific recommendations
         for env in self.data:
@@ -615,7 +727,7 @@ class MicroplasticRiskAssessment:
                 print("   - Focus on source prevention")
                 print("   - Periodic reassessment recommended")
                 
-        print("\n5. DATA QUALITY ASSESSMENT:")
+        print("\n6. DATA QUALITY ASSESSMENT:")
         print(f"   - Sample size: 20 per environment (adequate for initial assessment)")
         print(f"   - Model performance: R² > 0.65 for abundance predictions")
         print(f"   - Classification accuracy: >80% for risk categories")
@@ -623,7 +735,7 @@ class MicroplasticRiskAssessment:
         
     def visualize_results(self):
         """Create visualization plots"""
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        fig, axes = plt.subplots(3, 2, figsize=(14, 16))
         
         # 1. Abundance distribution by environment
         ax1 = axes[0, 0]
@@ -649,7 +761,7 @@ class MicroplasticRiskAssessment:
         
         ax2.set_xlabel('Risk Index')
         ax2.set_ylabel('Value')
-        ax2.set_title('Risk Indices Comparison')
+        ax2.set_title('Traditional Risk Indices Comparison')
         ax2.set_xticks(x + width)
         ax2.set_xticklabels(indices)
         ax2.legend()
@@ -697,6 +809,75 @@ class MicroplasticRiskAssessment:
         ax4.set_xticklabels(risk_cats)
         ax4.legend()
         
+        # 5. NEW: Environment-Specific Risk Indices (GWRI, SWRI, SPRI)
+        ax5 = axes[2, 0]
+        
+        # Get the index values with error bars
+        env_indices = []
+        env_errors = []
+        env_labels = []
+        
+        for env in ['groundwater', 'surface_water', 'sediment']:
+            if env == 'groundwater':
+                index_name = 'GWRI'
+            elif env == 'surface_water':
+                index_name = 'SWRI'
+            else:
+                index_name = 'SPRI'
+            
+            env_indices.append(self.risk_indices[env][f'{index_name}_mean'])
+            # Calculate error as difference from mean to 95% CI bounds
+            ci_lower = self.risk_indices[env][f'{index_name}_MC_95CI'][0]
+            ci_upper = self.risk_indices[env][f'{index_name}_MC_95CI'][1]
+            mean_val = self.risk_indices[env][f'{index_name}_mean']
+            env_errors.append([mean_val - ci_lower, ci_upper - mean_val])
+            env_labels.append(index_name)
+        
+        x_pos = np.arange(len(env_labels))
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+        
+        # Create bar plot with error bars
+        bars = ax5.bar(x_pos, env_indices, yerr=np.array(env_errors).T, 
+                      capsize=5, color=colors, alpha=0.7, edgecolor='black')
+        
+        ax5.set_xlabel('Environment-Specific Index')
+        ax5.set_ylabel('Index Value')
+        ax5.set_title('Environment-Specific Risk Indices with 95% CI')
+        ax5.set_xticks(x_pos)
+        ax5.set_xticklabels(env_labels)
+        
+        # Add value labels on bars
+        for i, (bar, val) in enumerate(zip(bars, env_indices)):
+            ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height() + env_errors[i][1] + 0.5,
+                    f'{val:.2f}', ha='center', va='bottom')
+        
+        # 6. NEW: Correlation between Abundance and Polymer Hazard
+        ax6 = axes[2, 1]
+        
+        colors_env = {'groundwater': 'blue', 'surface_water': 'orange', 'sediment': 'green'}
+        markers = {'groundwater': 'o', 'surface_water': 's', 'sediment': '^'}
+        
+        for env in ['groundwater', 'surface_water', 'sediment']:
+            df = self.data[env]
+            if env == 'groundwater':
+                index_col = 'GWRI'
+            elif env == 'surface_water':
+                index_col = 'SWRI'
+            else:
+                index_col = 'SPRI'
+            
+            ax6.scatter(df['Abundance'], df[index_col], 
+                       color=colors_env[env], marker=markers[env],
+                       label=env.replace('_', ' ').title(), alpha=0.6, s=50)
+        
+        ax6.set_xlabel('Abundance (MPs/L or MPs/kg)')
+        ax6.set_ylabel('Environment-Specific Risk Index')
+        ax6.set_title('Relationship: Abundance vs Risk Index')
+        ax6.set_xscale('log')
+        ax6.set_yscale('log')
+        ax6.legend()
+        ax6.grid(True, alpha=0.3)
+        
         plt.tight_layout()
         plt.savefig('microplastic_risk_assessment_results.png', dpi=300, bbox_inches='tight')
         plt.show()
@@ -709,11 +890,11 @@ if __name__ == "__main__":
     # Initialize the assessment framework
     mra = MicroplasticRiskAssessment()
     
-    # Load data
+    # Load data - UPDATE THESE PATHS TO YOUR ACTUAL FILE LOCATIONS
     mra.load_data(
         '/Users/asifashraf/Documents/Manuscripts/4. Microplastic New Work/Data/GW_Microplastic_Data.xlsx',
-        '/Users/asifashraf/Documents/Manuscripts/4. Microplastic New Work/Data/Sediment_Microplastic_Data.xlsx', 
-        '/Users/asifashraf/Documents/Manuscripts/4. Microplastic New Work/Data/SW_Microplastic_Data.xlsx'
+        '/Users/asifashraf/Documents/Manuscripts/4. Microplastic New Work/Data/SW_Microplastic_Data.xlsx', 
+        '/Users/asifashraf/Documents/Manuscripts/4. Microplastic New Work/Data/Sediment_Microplastic_Data.xlsx'
     )
     
     # Run the complete assessment pipeline
@@ -741,7 +922,7 @@ if __name__ == "__main__":
         for i, cat in enumerate(risk_categories):
             print(f"    {cat}: {results['risk_probabilities'][0][i]:.3f}")
     
-    # Cross-environment analysis
+    # Cross-environment analysis (now includes new indices comparison)
     mra.cross_environment_analysis()
     
     # Generate final report
@@ -756,7 +937,12 @@ if __name__ == "__main__":
     print("\nThe probabilistic risk assessment has been completed successfully!")
     print("Results include:")
     print("- Environmental risk indices with uncertainty quantification")
+    print("- Environment-specific indices (GWRI, SWRI, SPRI)")
     print("- Ensemble model predictions with Bayesian uncertainty")
     print("- Cross-environment contamination patterns")
     print("- Comprehensive risk report with management recommendations")
     print("- Visualization plots saved to file")
+
+
+        
+        
