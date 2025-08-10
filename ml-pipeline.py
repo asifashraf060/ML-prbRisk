@@ -116,13 +116,20 @@ class MicroplasticRiskAssessment:
                 for col in morph_cols
             ) / 100
             
-            # 3. Diversity indices
-            df['Polymer_Diversity'] = stats.entropy(
-                df[polymer_cols].values / 100, axis=1
-            )
-            df['Morphology_Diversity'] = stats.entropy(
-                df[morph_cols].values / 100, axis=1
-            )
+            # 3. Diversity indices - fixed to handle zero probabilities
+            polymer_probs = df[polymer_cols].values / 100
+            # Add small epsilon to avoid log(0)
+            polymer_probs = np.clip(polymer_probs, 1e-10, 1.0)
+            df['Polymer_Diversity'] = stats.entropy(polymer_probs, axis=1)
+            
+            morph_probs = df[morph_cols].values / 100
+            # Add small epsilon to avoid log(0)
+            morph_probs = np.clip(morph_probs, 1e-10, 1.0)
+            df['Morphology_Diversity'] = stats.entropy(morph_probs, axis=1)
+            
+            # Replace any NaN values that might have been created
+            df['Polymer_Diversity'].fillna(0, inplace=True)
+            df['Morphology_Diversity'].fillna(0, inplace=True)
             
             # 4. Dominant polymer and morphology
             df['Dominant_Polymer'] = df[polymer_cols].idxmax(axis=1).str.split(' ').str[0]
@@ -301,43 +308,66 @@ class MicroplasticRiskAssessment:
             X = df[feature_cols].values
             y_reg = df['Abundance'].values
             
+            # Check for data issues
+            print(f"  Checking data quality...")
+            print(f"    X shape: {X.shape}")
+            print(f"    y shape: {y_reg.shape}")
+            print(f"    Any NaN in X: {np.any(np.isnan(X))}")
+            print(f"    Any NaN in y: {np.any(np.isnan(y_reg))}")
+            print(f"    Any Inf in X: {np.any(np.isinf(X))}")
+            print(f"    Any Inf in y: {np.any(np.isinf(y_reg))}")
+            
+            # Replace any remaining NaN or Inf values
+            X = np.nan_to_num(X, nan=0.0, posinf=1e10, neginf=-1e10)
+            y_reg = np.nan_to_num(y_reg, nan=0.0, posinf=1e10, neginf=-1e10)
+            
             # Check class distribution for classification
             risk_cat_counts = df['Risk_Category'].value_counts()
             print(f"  Risk category distribution: {dict(risk_cat_counts)}")
             
             # Determine if we have enough classes for classification
             n_classes = len(df['Risk_Category'].unique())
-            min_class_size = risk_cat_counts.min()
+            min_class_size = risk_cat_counts.min() if len(risk_cat_counts) > 0 else 0
             
             # Standardize features
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
             
-            # Initialize ensemble models
-            # 1. Random Forest
+            # Check scaled data
+            print(f"    Any NaN in X_scaled: {np.any(np.isnan(X_scaled))}")
+            print(f"    Any Inf in X_scaled: {np.any(np.isinf(X_scaled))}")
+            
+            # Replace any NaN/Inf that might have been introduced by scaling
+            X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=10.0, neginf=-10.0)
+            
+            # Initialize ensemble models with adjusted parameters for small dataset
+            # 1. Random Forest - reduced complexity
             rf_reg = RandomForestRegressor(
-                n_estimators=100, 
-                max_depth=3,  # Reduced for small dataset
-                min_samples_split=3,  # Reduced for small dataset
+                n_estimators=50,  # Reduced from 100
+                max_depth=2,      # Reduced from 3
+                min_samples_split=5,  # Increased from 3
+                min_samples_leaf=2,   # Added minimum leaf samples
                 random_state=42
             )
             
-            # 2. Support Vector Machines
-            svm_reg = SVR(kernel='rbf', C=1.0, gamma='scale')
+            # 2. Support Vector Machines with regularization
+            svm_reg = SVR(kernel='rbf', C=0.1, gamma='scale', epsilon=0.1)  # Reduced C for more regularization
             
-            # 3. Gaussian Process (provides uncertainty)
-            kernel = ConstantKernel(1.0) * RBF(1.0)
+            # 3. Gaussian Process with increased regularization
+            kernel = ConstantKernel(1.0, (1e-3, 1e3)) * RBF(1.0, (1e-3, 1e3))
             gp_reg = GaussianProcessRegressor(
                 kernel=kernel,
-                alpha=0.1,
+                alpha=1.0,  # Increased from 0.1 for more regularization
+                normalize_y=True,  # Added normalization
                 random_state=42
             )
             
             # Store models and performance
             env_models = {}
             
-            # For regression models, use Leave-One-Out CV
-            loo = LeaveOneOut()
+            # For regression models, use K-Fold CV instead of LOO for small datasets
+            from sklearn.model_selection import KFold
+            kf = KFold(n_splits=min(5, len(X)), shuffle=True, random_state=42)
             
             # Train regression models
             reg_models = {
@@ -348,38 +378,65 @@ class MicroplasticRiskAssessment:
             
             for name, model in reg_models.items():
                 try:
-                    scores = cross_val_score(model, X_scaled, y_reg, cv=loo, scoring='r2')
+                    # Use negative MSE instead of R² for more stable scoring
+                    scores = cross_val_score(model, X_scaled, y_reg, cv=kf, 
+                                            scoring='neg_mean_squared_error')
+                    
+                    # Convert to positive MSE
+                    mse_scores = -scores
+                    
+                    # Fit the model on all data
                     model.fit(X_scaled, y_reg)
-                    print(f"  {name} R²: {scores.mean():.3f} (±{scores.std():.3f})")
+                    
+                    # Calculate R² on the full dataset (for reference)
+                    y_pred = model.predict(X_scaled)
+                    r2_full = r2_score(y_reg, y_pred)
+                    
+                    print(f"  {name} - MSE: {mse_scores.mean():.3f} (±{mse_scores.std():.3f}), R² (full): {r2_full:.3f}")
                     
                     env_models[name] = {
                         'model': model,
                         'scaler': scaler,
-                        'performance': scores.mean(),
-                        'std': scores.std()
+                        'performance': max(0.001, 1 / (1 + mse_scores.mean())),  # Convert MSE to weight
+                        'std': mse_scores.std(),
+                        'mse': mse_scores.mean(),
+                        'r2_full': r2_full
                     }
                 except Exception as e:
                     print(f"  Warning: {name} failed with error: {str(e)}")
+                    # Create a simple fallback model
+                    from sklearn.dummy import DummyRegressor
+                    dummy_model = DummyRegressor(strategy='mean')
+                    dummy_model.fit(X_scaled, y_reg)
+                    env_models[name] = {
+                        'model': dummy_model,
+                        'scaler': scaler,
+                        'performance': 0.001,
+                        'std': 1.0,
+                        'mse': np.inf,
+                        'r2_full': 0.0
+                    }
             
             # For classification, only proceed if we have enough samples and classes
             if n_classes >= 2 and min_class_size >= 2:
                 # Use stratified k-fold for classification with small k
-                n_splits = min(3, min_class_size)  # Ensure we have enough samples per fold
+                n_splits = min(3, min_class_size)
                 skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
                 
                 y_clf = LabelEncoder().fit_transform(df['Risk_Category'])
                 
-                # Classification models
+                # Classification models with reduced complexity
                 rf_clf = RandomForestClassifier(
-                    n_estimators=100,
-                    max_depth=3,
-                    min_samples_split=3,
+                    n_estimators=50,
+                    max_depth=2,
+                    min_samples_split=5,
+                    min_samples_leaf=2,
                     random_state=42,
-                    class_weight='balanced'  # Handle imbalanced classes
+                    class_weight='balanced'
                 )
                 
-                svm_clf = SVC(kernel='rbf', C=1.0, gamma='scale', probability=True, 
-                             class_weight='balanced')
+                svm_clf = SVC(kernel='rbf', C=0.1, gamma='scale', probability=True, 
+                            class_weight='balanced')
                 
                 gp_clf = GaussianProcessClassifier(
                     kernel=kernel,
@@ -401,7 +458,7 @@ class MicroplasticRiskAssessment:
                         env_models[name] = {
                             'model': model,
                             'scaler': scaler,
-                            'performance': scores.mean(),
+                            'performance': max(0.001, scores.mean()),
                             'std': scores.std(),
                             'label_encoder': LabelEncoder().fit(df['Risk_Category'])
                         }
